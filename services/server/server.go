@@ -31,6 +31,7 @@ import (
 
 	csapi "github.com/containerd/containerd/api/services/content/v1"
 	ssapi "github.com/containerd/containerd/api/services/snapshots/v1"
+	tsapi "github.com/containerd/containerd/api/services/tasks/v1"
 	"github.com/containerd/containerd/content"
 	"github.com/containerd/containerd/content/local"
 	csproxy "github.com/containerd/containerd/content/proxy"
@@ -42,6 +43,7 @@ import (
 	"github.com/containerd/containerd/pkg/dialer"
 	"github.com/containerd/containerd/pkg/timeout"
 	"github.com/containerd/containerd/plugin"
+	runtimeproxy "github.com/containerd/containerd/runtime/proxy"
 	srvconfig "github.com/containerd/containerd/services/server/config"
 	"github.com/containerd/containerd/snapshots"
 	ssproxy "github.com/containerd/containerd/snapshots/proxy"
@@ -410,11 +412,16 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 			f = func(conn *grpc.ClientConn) interface{} {
 				return ssproxy.NewSnapshotter(ssapi.NewSnapshotsClient(conn), ssname)
 			}
-
 		case string(plugin.ContentPlugin), "content":
 			t = plugin.ContentPlugin
 			f = func(conn *grpc.ClientConn) interface{} {
 				return csproxy.NewContentStore(csapi.NewContentClient(conn))
+			}
+		case string(plugin.RuntimePlugin), "task":
+			t = plugin.RuntimePlugin
+			tsname := name
+			f = func(conn *grpc.ClientConn) interface{} {
+				return runtimeproxy.NewPlatformRuntime(tsapi.NewTasksClient(conn), tsname)
 			}
 		default:
 			log.G(ctx).WithField("type", pp.Type).Warn("unknown proxy plugin type")
