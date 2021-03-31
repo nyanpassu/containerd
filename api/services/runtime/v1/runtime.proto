@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package containerd.services.tasks.v1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/any.proto";
+import weak "gogoproto/gogo.proto";
+import "github.com/containerd/containerd/api/types/mount.proto";
+import "github.com/containerd/containerd/api/types/metrics.proto";
+import "github.com/containerd/containerd/api/types/descriptor.proto";
+import "github.com/containerd/containerd/api/types/task/task.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/containerd/containerd/api/services/tasks/v1;tasks";
+
+service PlatformRuntime {
+	// Create a task.
+	rpc Create(CreateTaskRequest) returns (CreateTaskResponse);
+  // Get a task.
+	rpc Get(GetRequest) returns (GetResponse);
+  // List tasks.
+	rpc List(ListTasksRequest) returns (ListTasksResponse);
+}
+
+message CreateTaskRequest {
+  string id = 1;
+	string bundle = 2;
+	repeated containerd.types.Mount rootfs = 3;
+	bool terminal = 4;
+	string stdin = 5;
+	string stdout = 6;
+	string stderr = 7;
+	string checkpoint = 8;
+  string namespace = 9;
+	google.protobuf.Any task_options = 10;
+}
+
+message CreateTaskResponse {
+	uint32 pid = 2;
+}
+
+message TaskProcess {
+  string namespace = 1;
+  containerd.v1.types.Process process = 2;
+}
+
+message GetTaskRequest {
+	string id = 1;
+}
+
+message GetTaskResponse {
+	TaskProcess task = 1;
+}
+
+message ListTasksRequest {
+  string namespace = 1;
+}
+
+message ListTasksResponse {
+	repeated TaskProcess tasks = 1;
+}

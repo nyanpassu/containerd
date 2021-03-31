@@ -12,7 +12,7 @@ plugins = ["grpc", "fieldpath"]
   # Paths that should be treated as include roots in relation to the vendor
   # directory. These will be calculated with the vendor directory nearest the
   # target package.
-  packages = ["github.com/gogo/protobuf", "github.com/gogo/googleapis"]
+  vendored = ["github.com/gogo/protobuf", "github.com/gogo/protobuf/protobuf", "github.com/gogo/googleapis"]
 
   # Paths that will be added untouched to the end of the includes. We use
   # `/usr/local/include` to pickup the common install location of protobuf.
