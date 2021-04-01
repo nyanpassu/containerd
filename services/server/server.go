@@ -30,6 +30,7 @@ import (
 	"time"
 
 	csapi "github.com/containerd/containerd/api/services/content/v1"
+	rtapi "github.com/containerd/containerd/api/services/runtime/v1"
 	ssapi "github.com/containerd/containerd/api/services/snapshots/v1"
 	tsapi "github.com/containerd/containerd/api/services/tasks/v1"
 	"github.com/containerd/containerd/content"
@@ -421,7 +422,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 			t = plugin.RuntimePlugin
 			tsname := name
 			f = func(conn *grpc.ClientConn) interface{} {
-				return runtimeproxy.NewPlatformRuntime(tsapi.NewTasksClient(conn), tsname)
+				return runtimeproxy.NewPlatformRuntime(tsapi.NewTasksClient(conn), rtapi.NewPlatformRuntimeClient(conn), tsname)
 			}
 		default:
 			log.G(ctx).WithField("type", pp.Type).Warn("unknown proxy plugin type")

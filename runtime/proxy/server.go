@@ -7,7 +7,7 @@ import (
 	pbtypes "github.com/gogo/protobuf/types"
 	"google.golang.org/grpc"
 
-	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
+	rtapi "github.com/containerd/containerd/api/services/runtime/v1"
 	apitypes "github.com/containerd/containerd/api/types/task"
 	"github.com/containerd/containerd/runtime"
 )
@@ -21,7 +21,7 @@ func RunPlatformRuntimeService(runtime runtime.PlatformRuntime) error {
 	}
 
 	server := grpc.NewServer()
-	tasksapi.RegisterTasksServer(server, &taskServer{})
+	rtapi.RegisterPlatformRuntimeServer(server, &taskServer{})
 	return server.Serve(listener)
 }
 
@@ -30,8 +30,8 @@ type taskServer struct {
 }
 
 // Create a task.
-func (ts *taskServer) Create(ctx context.Context, r *tasksapi.CreateTaskRequest) (*tasksapi.CreateTaskResponse, error) {
-	task, err := ts.runtime.Create(ctx, r.ContainerID, runtime.CreateOpts{
+func (ts *taskServer) Create(ctx context.Context, r *rtapi.CreateTaskRequest) (*rtapi.CreateTaskResponse, error) {
+	task, err := ts.runtime.Create(ctx, r.ID, runtime.CreateOpts{
 		Spec: nil,
 		// Rootfs mounts to perform to gain access to the container's filesystem
 		Rootfs: nil,
@@ -52,27 +52,26 @@ func (ts *taskServer) Create(ctx context.Context, r *tasksapi.CreateTaskRequest)
 	if err != nil {
 		return nil, err
 	}
-	return &tasksapi.CreateTaskResponse{
-		ContainerID: task.ID(),
-		Pid:         task.PID(),
+	return &rtapi.CreateTaskResponse{
+		Pid: task.PID(),
 	}, nil
 }
 
 // Start a process.
-func (ts *taskServer) Start(ctx context.Context, r *tasksapi.StartRequest) (*tasksapi.StartResponse, error) {
-	task, err := ts.runtime.Get(ctx, r.ContainerID)
+func (ts *taskServer) Start(ctx context.Context, r *rtapi.StartRequest) (*rtapi.StartResponse, error) {
+	task, err := ts.runtime.Get(ctx, r.ID)
 	if err != nil {
 		return nil, err
 	}
 	if err := task.Start(ctx); err != nil {
 		return nil, err
 	}
-	return &tasksapi.StartResponse{}, nil
+	return &rtapi.StartResponse{}, nil
 }
 
 // Delete a task and on disk state.
-func (ts *taskServer) Delete(ctx context.Context, r *tasksapi.DeleteTaskRequest) (*tasksapi.DeleteResponse, error) {
-	task, err := ts.runtime.Get(ctx, r.ContainerID)
+func (ts *taskServer) Delete(ctx context.Context, r *rtapi.DeleteRequest) (*rtapi.DeleteResponse, error) {
+	task, err := ts.runtime.Get(ctx, r.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -80,108 +79,104 @@ func (ts *taskServer) Delete(ctx context.Context, r *tasksapi.DeleteTaskRequest)
 	if err != nil {
 		return nil, err
 	}
-	return &tasksapi.DeleteResponse{
+	return &rtapi.DeleteResponse{
 		Pid:        exit.Pid,
 		ExitStatus: exit.Status,
 		ExitedAt:   exit.Timestamp,
 	}, nil
 }
 
-func (ts *taskServer) DeleteProcess(ctx context.Context, r *tasksapi.DeleteProcessRequest) (*tasksapi.DeleteResponse, error) {
-	task, err := ts.runtime.Get(ctx, r.ContainerID)
+func (ts *taskServer) Get(ctx context.Context, r *rtapi.GetTaskRequest) (*rtapi.GetTaskResponse, error) {
+	task, err := ts.runtime.Get(ctx, r.ID)
 	if err != nil {
 		return nil, err
 	}
-	proc, err := task.Process(ctx, r.ExecID)
+	state, err := task.State(ctx)
 	if err != nil {
 		return nil, err
 	}
-	exit, err := proc.Delete(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &tasksapi.DeleteResponse{
-		ID:         r.ExecID,
-		Pid:        exit.Pid,
-		ExitStatus: exit.Status,
-		ExitedAt:   exit.Timestamp,
+	return &rtapi.GetTaskResponse{
+		Task: &rtapi.TaskProcess{
+			Namespace: task.Namespace(),
+			Process: &apitypes.Process{
+				ID:         task.ID(),
+				Pid:        state.Pid,
+				Status:     apitypes.Status(state.Status),
+				Stdin:      state.Stdin,
+				Stdout:     state.Stdout,
+				Stderr:     state.Stderr,
+				Terminal:   state.Terminal,
+				ExitStatus: state.ExitStatus,
+				ExitedAt:   state.ExitedAt,
+			},
+		},
 	}, nil
 }
 
-func (ts *taskServer) Get(ctx context.Context, r *tasksapi.GetRequest) (*tasksapi.GetResponse, error) {
-	task, err := ts.runtime.Get(ctx, r.ContainerID)
+func (ts *taskServer) State(ctx context.Context, r *rtapi.StateRequest) (*rtapi.StateResponse, error) {
+	task, err := ts.runtime.Get(ctx, r.ID)
 	if err != nil {
 		return nil, err
 	}
-	get := func(f func() (string, runtime.State, error)) (*tasksapi.GetResponse, error) {
-		id, state, err := f()
+	getState := func(state runtime.State, err error) (*rtapi.StateResponse, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &tasksapi.GetResponse{
-			Process: &apitypes.Process{
-				ContainerID: task.ID(),
-				ID:          id,
-				Pid:         state.Pid,
-				Status:      apitypes.Status(state.Status),
-				Stdin:       state.Stdin,
-				Stdout:      state.Stdout,
-				Stderr:      state.Stderr,
-				Terminal:    state.Terminal,
-				ExitStatus:  state.ExitStatus,
-				ExitedAt:    state.ExitedAt,
-			},
+		return &rtapi.StateResponse{
+			Status:     apitypes.Status(state.Status),
+			Pid:        state.Pid,
+			ExitStatus: state.ExitStatus,
+			ExitedAt:   state.ExitedAt,
+			Stdin:      state.Stdin,
+			Stdout:     state.Stdout,
+			Stderr:     state.Stderr,
+			Terminal:   state.Terminal,
 		}, nil
 	}
 	if r.ExecID == "" {
-		return get(func() (string, runtime.State, error) {
-			id := task.ID()
-			state, err := task.State(ctx)
-			return id, state, err
-		})
+		return getState(task.State(ctx))
 	}
 	proc, err := task.Process(ctx, r.ExecID)
 	if err != nil {
 		return nil, err
 	}
-	return get(func() (string, runtime.State, error) {
-		id := proc.ID()
-		state, err := proc.State(ctx)
-		return id, state, err
-	})
+	return getState(proc.State(ctx))
 }
 
-func (ts *taskServer) List(ctx context.Context, r *tasksapi.ListTasksRequest) (*tasksapi.ListTasksResponse, error) {
+func (ts *taskServer) List(ctx context.Context, r *rtapi.ListTasksRequest) (*rtapi.ListTasksResponse, error) {
 	tasks, err := ts.runtime.Tasks(ctx, false)
 	if err != nil {
 		return nil, err
 	}
-	var processes []*apitypes.Process
+	var processes []*rtapi.TaskProcess
 	for _, task := range tasks {
 		status, err := task.State(ctx)
 		if err != nil {
 			return nil, err
 		}
-		processes = append(processes, &apitypes.Process{
-			ID:         task.ID(),
-			Pid:        status.Pid,
-			Status:     apitypes.Status(status.Status),
-			Stdin:      status.Stdin,
-			Stdout:     status.Stdout,
-			Stderr:     status.Stderr,
-			Terminal:   status.Terminal,
-			ExitStatus: status.ExitStatus,
-			ExitedAt:   status.ExitedAt,
+		processes = append(processes, &rtapi.TaskProcess{
+			Namespace: task.Namespace(),
+			Process: &apitypes.Process{
+				ID:         task.ID(),
+				Pid:        status.Pid,
+				Status:     apitypes.Status(status.Status),
+				Stdin:      status.Stdin,
+				Stdout:     status.Stdout,
+				Stderr:     status.Stderr,
+				Terminal:   status.Terminal,
+				ExitStatus: status.ExitStatus,
+				ExitedAt:   status.ExitedAt,
+			},
 		})
 	}
-	return &tasksapi.ListTasksResponse{
+	return &rtapi.ListTasksResponse{
 		Tasks: processes,
 	}, nil
 }
 
 // Kill a task or process.
-func (ts *taskServer) Kill(ctx context.Context, r *tasksapi.KillRequest) (*pbtypes.Empty, error) {
-	task, err := ts.runtime.Get(ctx, r.ContainerID)
+func (ts *taskServer) Kill(ctx context.Context, r *rtapi.KillRequest) (*pbtypes.Empty, error) {
+	task, err := ts.runtime.Get(ctx, r.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -201,8 +196,8 @@ func (ts *taskServer) Kill(ctx context.Context, r *tasksapi.KillRequest) (*pbtyp
 	return empty, nil
 }
 
-func (ts *taskServer) Exec(ctx context.Context, r *tasksapi.ExecProcessRequest) (*pbtypes.Empty, error) {
-	task, err := ts.runtime.Get(ctx, r.ContainerID)
+func (ts *taskServer) Exec(ctx context.Context, r *rtapi.ExecProcessRequest) (*pbtypes.Empty, error) {
+	task, err := ts.runtime.Get(ctx, r.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -220,8 +215,22 @@ func (ts *taskServer) Exec(ctx context.Context, r *tasksapi.ExecProcessRequest) 
 	return empty, nil
 }
 
-func (ts *taskServer) ResizePty(ctx context.Context, r *tasksapi.ResizePtyRequest) (*pbtypes.Empty, error) {
-	task, err := ts.runtime.Get(ctx, r.ContainerID)
+func (ts *taskServer) Stats(ctx context.Context, r *rtapi.StatsRequest) (*rtapi.StatsResponse, error) {
+	task, err := ts.runtime.Get(ctx, r.ID)
+	if err != nil {
+		return nil, err
+	}
+	stat, err := task.Stats(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &rtapi.StatsResponse{
+		Stats: stat,
+	}, nil
+}
+
+func (ts *taskServer) ResizePty(ctx context.Context, r *rtapi.ResizePtyRequest) (*pbtypes.Empty, error) {
+	task, err := ts.runtime.Get(ctx, r.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -244,8 +253,8 @@ func (ts *taskServer) ResizePty(ctx context.Context, r *tasksapi.ResizePtyReques
 	return resize(func(size runtime.ConsoleSize) error { return process.ResizePty(ctx, size) })
 }
 
-func (ts *taskServer) CloseIO(ctx context.Context, r *tasksapi.CloseIORequest) (*pbtypes.Empty, error) {
-	task, err := ts.runtime.Get(ctx, r.ContainerID)
+func (ts *taskServer) CloseIO(ctx context.Context, r *rtapi.CloseIORequest) (*pbtypes.Empty, error) {
+	task, err := ts.runtime.Get(ctx, r.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -265,8 +274,8 @@ func (ts *taskServer) CloseIO(ctx context.Context, r *tasksapi.CloseIORequest) (
 	return close(func() error { return proc.CloseIO(ctx) })
 }
 
-func (ts *taskServer) Pause(ctx context.Context, r *tasksapi.PauseTaskRequest) (*pbtypes.Empty, error) {
-	task, err := ts.runtime.Get(ctx, r.ContainerID)
+func (ts *taskServer) Pause(ctx context.Context, r *rtapi.PauseTaskRequest) (*pbtypes.Empty, error) {
+	task, err := ts.runtime.Get(ctx, r.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -276,8 +285,8 @@ func (ts *taskServer) Pause(ctx context.Context, r *tasksapi.PauseTaskRequest) (
 	return empty, nil
 }
 
-func (ts *taskServer) Resume(ctx context.Context, r *tasksapi.ResumeTaskRequest) (*pbtypes.Empty, error) {
-	task, err := ts.runtime.Get(ctx, r.ContainerID)
+func (ts *taskServer) Resume(ctx context.Context, r *rtapi.ResumeTaskRequest) (*pbtypes.Empty, error) {
+	task, err := ts.runtime.Get(ctx, r.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -287,8 +296,8 @@ func (ts *taskServer) Resume(ctx context.Context, r *tasksapi.ResumeTaskRequest)
 	return empty, nil
 }
 
-func (ts *taskServer) ListPids(ctx context.Context, r *tasksapi.ListPidsRequest) (*tasksapi.ListPidsResponse, error) {
-	task, err := ts.runtime.Get(ctx, r.ContainerID)
+func (ts *taskServer) Pids(ctx context.Context, r *rtapi.PidsRequest) (*rtapi.PidsResponse, error) {
+	task, err := ts.runtime.Get(ctx, r.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -304,22 +313,24 @@ func (ts *taskServer) ListPids(ctx context.Context, r *tasksapi.ListPidsRequest)
 			// Info: proc.Info,
 		})
 	}
-	return &tasksapi.ListPidsResponse{
+	return &rtapi.PidsResponse{
 		Processes: infos,
 	}, nil
 }
 
-func (ts *taskServer) Checkpoint(ctx context.Context, r *tasksapi.CheckpointTaskRequest) (*tasksapi.CheckpointTaskResponse, error) {
-	task, err := ts.runtime.Get(ctx, r.ContainerID)
+func (ts *taskServer) Checkpoint(ctx context.Context, r *rtapi.CheckpointTaskRequest) (*pbtypes.Empty, error) {
+	task, err := ts.runtime.Get(ctx, r.ID)
 	if err != nil {
 		return nil, err
 	}
-	task.Checkpoint(ctx)
-	// task.Checkpoint(ctx, )
+	if err = task.Checkpoint(ctx, r.Path, r.Options); err != nil {
+		return nil, err
+	}
+	return empty, nil
 }
 
-func (ts *taskServer) Update(ctx context.Context, r *tasksapi.UpdateTaskRequest) (*pbtypes.Empty, error) {
-	task, err := ts.runtime.Get(ctx, r.ContainerID)
+func (ts *taskServer) Update(ctx context.Context, r *rtapi.UpdateTaskRequest) (*pbtypes.Empty, error) {
+	task, err := ts.runtime.Get(ctx, r.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -329,20 +340,16 @@ func (ts *taskServer) Update(ctx context.Context, r *tasksapi.UpdateTaskRequest)
 	return empty, nil
 }
 
-func (ts *taskServer) Metrics(ctx context.Context, r *tasksapi.MetricsRequest) (*tasksapi.MetricsResponse, error) {
-
-}
-
-func (ts *taskServer) Wait(ctx context.Context, r *tasksapi.WaitRequest) (*tasksapi.WaitResponse, error) {
-	task, err := ts.runtime.Get(ctx, r.ContainerID)
+func (ts *taskServer) Wait(ctx context.Context, r *rtapi.WaitRequest) (*rtapi.WaitResponse, error) {
+	task, err := ts.runtime.Get(ctx, r.ID)
 	if err != nil {
 		return nil, err
 	}
-	wait := func(exit *runtime.Exit, err error) (*tasksapi.WaitResponse, error) {
+	wait := func(exit *runtime.Exit, err error) (*rtapi.WaitResponse, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &tasksapi.WaitResponse{
+		return &rtapi.WaitResponse{
 			ExitStatus: exit.Status,
 			ExitedAt:   exit.Timestamp,
 		}, nil

@@ -6,23 +6,22 @@ import (
 	"github.com/gogo/protobuf/types"
 	"github.com/pkg/errors"
 
-	// tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
-	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
+	rtapi "github.com/containerd/containerd/api/services/runtime/v1"
 	typesapi "github.com/containerd/containerd/api/types"
+	"github.com/containerd/containerd/namespaces"
 	"github.com/containerd/containerd/runtime"
-	"github.com/containerd/containerd/runtime/v2/task"
 )
 
-func NewPlatformRuntime(task task.TaskService, name string) runtime.PlatformRuntime {
+func NewPlatformRuntime(runtime rtapi.PlatformRuntimeClient, name string) runtime.PlatformRuntime {
 	return &proxyPlatformRuntime{
-		id:   name,
-		task: task,
+		id: name,
+		rt: runtime,
 	}
 }
 
 type proxyPlatformRuntime struct {
 	id        string
-	task      task.TaskService
+	rt        rtapi.PlatformRuntimeClient
 	namespace string
 }
 
@@ -33,55 +32,57 @@ func (p *proxyPlatformRuntime) ID() string {
 
 // Create creates a task with the provided id and options.
 func (p *proxyPlatformRuntime) Create(ctx context.Context, id string, opts runtime.CreateOpts) (runtime.Task, error) {
+	ns, err := namespaces.NamespaceRequired(ctx)
+
 	var rootfs []*typesapi.Mount
 	if opts.Rootfs != nil {
 		for _, mnt := range opts.Rootfs {
 			rootfs = append(rootfs, &typesapi.Mount{
-				Type:   mnt.Type,
-				Source: mnt.Source,
-				// TODO how to get target ?
+				Type:    mnt.Type,
+				Source:  mnt.Source,
+				Options: mnt.Options,
 			})
 		}
 	}
-	resp, err := p.task.Create(ctx, &task.CreateTaskRequest{
-		ID:       id,
-		Rootfs:   rootfs,
-		Stdin:    opts.IO.Stdin,
-		Stdout:   opts.IO.Stdout,
-		Stderr:   opts.IO.Stderr,
-		Terminal: opts.IO.Terminal,
+	resp, err := p.rt.Create(ctx, &rtapi.CreateTaskRequest{
+		ID:         id,
+		Rootfs:     rootfs,
+		Stdin:      opts.IO.Stdin,
+		Stdout:     opts.IO.Stdout,
+		Stderr:     opts.IO.Stderr,
+		Terminal:   opts.IO.Terminal,
+		Checkpoint: opts.Checkpoint,
+		Namespace:  ns,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return newProxyTask(p.task, id, resp.Pid, p.namespace), nil
+	return newProxyTask(p.rt, id, resp.Pid, p.namespace), nil
 }
 
 // Get returns a task.
 func (p *proxyPlatformRuntime) Get(ctx context.Context, id string) (runtime.Task, error) {
-	newProxyTask(p.task, id)
-
-	resp, err := p.client.Get(ctx, &tasksapi.GetRequest{
-		ContainerID: id,
+	resp, err := p.rt.Get(ctx, &rtapi.GetTaskRequest{
+		ID: id,
 	})
 	if err != nil {
 		return nil, err
 	}
 	// server will not use Process.ContainerID but process.ID
-	return newProxyTask(p.client, resp.Process.ID, resp.Process.Pid, p.namespace), nil
+	return newProxyTask(p.rt, resp.Task.Process.ID, resp.Task.Process.Pid, resp.Task.Namespace), nil
 }
 
 // Tasks returns all the current tasks for the runtime.
 // Any container runs at most one task at a time.
 func (p *proxyPlatformRuntime) Tasks(ctx context.Context, b bool) ([]runtime.Task, error) {
 
-	resp, err := p.client.List(ctx, &tasksapi.ListTasksRequest{})
+	resp, err := p.rt.List(ctx, &rtapi.ListTasksRequest{})
 	if err != nil {
 		return nil, err
 	}
 	var tasks []runtime.Task
-	for _, process := range resp.Tasks {
-		tasks = append(tasks, newProxyTask(p.client, process.ID, process.Pid, p.namespace))
+	for _, task := range resp.Tasks {
+		tasks = append(tasks, newProxyTask(p.rt, task.Process.ID, task.Process.Pid, task.Namespace))
 	}
 	return tasks, nil
 }
@@ -96,11 +97,11 @@ func (p *proxyPlatformRuntime) Delete(ctx context.Context, id string) {
 	// do nothing
 }
 
-func newProxyTask(ts task.TaskService, id string, pid uint32, namespace string) runtime.Task {
+func newProxyTask(rt rtapi.PlatformRuntimeClient, id string, pid uint32, namespace string) runtime.Task {
 	return &proxyTask{
 		proxyProcess: proxyProcess{
-			task: ts,
-			tid:  id,
+			rt:  rt,
+			tid: id,
 		},
 		pid:       pid,
 		namespace: namespace,
@@ -130,7 +131,7 @@ func (t *proxyTask) Namespace() string {
 
 // Start the container's user defined process
 func (p *proxyTask) Start(ctx context.Context) error {
-	resp, err := p.task.Start(ctx, &task.StartRequest{
+	resp, err := p.rt.Start(ctx, &rtapi.StartRequest{
 		ID: p.tid,
 	})
 	if err == nil {
@@ -141,7 +142,7 @@ func (p *proxyTask) Start(ctx context.Context) error {
 
 // Pause pauses the container process
 func (t *proxyTask) Pause(ctx context.Context) error {
-	_, err := t.task.Pause(ctx, &task.PauseRequest{
+	_, err := t.rt.Pause(ctx, &rtapi.PauseTaskRequest{
 		ID: t.tid,
 	})
 	return err
@@ -149,7 +150,7 @@ func (t *proxyTask) Pause(ctx context.Context) error {
 
 // Resume unpauses the container process
 func (t *proxyTask) Resume(ctx context.Context) error {
-	_, err := t.task.Resume(ctx, &task.ResumeRequest{
+	_, err := t.rt.Resume(ctx, &rtapi.ResumeTaskRequest{
 		ID: t.tid,
 	})
 	return err
@@ -157,7 +158,7 @@ func (t *proxyTask) Resume(ctx context.Context) error {
 
 // Exec adds a process into the container
 func (t *proxyTask) Exec(ctx context.Context, execID string, opts runtime.ExecOpts) (runtime.Process, error) {
-	_, err := t.task.Exec(ctx, &task.ExecProcessRequest{
+	_, err := t.rt.Exec(ctx, &rtapi.ExecProcessRequest{
 		ID:       t.tid,
 		ExecID:   execID,
 		Stdin:    opts.IO.Stdin,
@@ -170,7 +171,7 @@ func (t *proxyTask) Exec(ctx context.Context, execID string, opts runtime.ExecOp
 		return nil, err
 	}
 	return newProxyProcess(
-		t.task,
+		t.rt,
 		t.tid,
 		execID,
 	), nil
@@ -178,7 +179,7 @@ func (t *proxyTask) Exec(ctx context.Context, execID string, opts runtime.ExecOp
 
 // Pids returns all pids
 func (t *proxyTask) Pids(ctx context.Context) ([]runtime.ProcessInfo, error) {
-	resp, err := t.task.Pids(ctx, &task.PidsRequest{
+	resp, err := t.rt.Pids(ctx, &rtapi.PidsRequest{
 		ID: t.tid,
 	})
 	if err != nil {
@@ -196,7 +197,7 @@ func (t *proxyTask) Pids(ctx context.Context) ([]runtime.ProcessInfo, error) {
 
 // Checkpoint checkpoints a container to an image with live system data
 func (t *proxyTask) Checkpoint(ctx context.Context, path string, any *types.Any) error {
-	_, err := t.task.Checkpoint(ctx, &task.CheckpointTaskRequest{
+	_, err := t.rt.Checkpoint(ctx, &rtapi.CheckpointTaskRequest{
 		ID:      t.tid,
 		Path:    path,
 		Options: any,
@@ -206,7 +207,7 @@ func (t *proxyTask) Checkpoint(ctx context.Context, path string, any *types.Any)
 
 // Update sets the provided resources to a running task
 func (t *proxyTask) Update(ctx context.Context, any *types.Any) error {
-	_, err := t.task.Update(ctx, &task.UpdateTaskRequest{
+	_, err := t.rt.Update(ctx, &rtapi.UpdateTaskRequest{
 		ID:        t.tid,
 		Resources: any,
 	})
@@ -215,7 +216,7 @@ func (t *proxyTask) Update(ctx context.Context, any *types.Any) error {
 
 // Process returns a process within the task for the provided id
 func (t *proxyTask) Process(ctx context.Context, execid string) (runtime.Process, error) {
-	p := newProxyProcess(t.task, t.tid, execid)
+	p := newProxyProcess(t.rt, t.tid, execid)
 	_, err := p.State(ctx)
 	if err != nil {
 		return nil, err
@@ -225,7 +226,7 @@ func (t *proxyTask) Process(ctx context.Context, execid string) (runtime.Process
 
 // Stats returns runtime specific metrics for a task
 func (t *proxyTask) Stats(ctx context.Context) (*types.Any, error) {
-	resp, err := t.task.Stats(ctx, &task.StatsRequest{
+	resp, err := t.rt.Stats(ctx, &rtapi.StatsRequest{
 		ID: t.tid,
 	})
 	if err != nil {
@@ -234,9 +235,9 @@ func (t *proxyTask) Stats(ctx context.Context) (*types.Any, error) {
 	return resp.Stats, nil
 }
 
-func newProxyProcess(ts task.TaskService, tid string, execid string) runtime.Process {
+func newProxyProcess(rt rtapi.PlatformRuntimeClient, tid string, execid string) runtime.Process {
 	return &proxyProcess{
-		task:   ts,
+		rt:     rt,
 		tid:    tid,
 		execid: execid,
 	}
@@ -245,7 +246,7 @@ func newProxyProcess(ts task.TaskService, tid string, execid string) runtime.Pro
 type proxyProcess struct {
 	tid    string
 	execid string
-	task   task.TaskService
+	rt     rtapi.PlatformRuntimeClient
 }
 
 // ID of the process
@@ -255,7 +256,7 @@ func (p *proxyProcess) ID() string {
 
 // State returns the process state
 func (p *proxyProcess) State(ctx context.Context) (runtime.State, error) {
-	resp, err := p.task.State(ctx, &task.StateRequest{
+	resp, err := p.rt.State(ctx, &rtapi.StateRequest{
 		ID:     p.tid,
 		ExecID: p.execid,
 	})
@@ -276,7 +277,7 @@ func (p *proxyProcess) State(ctx context.Context) (runtime.State, error) {
 
 // Kill signals a container
 func (p *proxyProcess) Kill(ctx context.Context, signal uint32, all bool) error {
-	_, err := p.task.Kill(ctx, &task.KillRequest{
+	_, err := p.rt.Kill(ctx, &rtapi.KillRequest{
 		ID:     p.tid,
 		ExecID: p.tid,
 		Signal: signal,
@@ -287,7 +288,7 @@ func (p *proxyProcess) Kill(ctx context.Context, signal uint32, all bool) error 
 
 // Pty resizes the processes pty/console
 func (p *proxyProcess) ResizePty(ctx context.Context, size runtime.ConsoleSize) error {
-	_, err := p.task.ResizePty(ctx, &task.ResizePtyRequest{
+	_, err := p.rt.ResizePty(ctx, &rtapi.ResizePtyRequest{
 		ID:     p.tid,
 		ExecID: p.execid,
 		Width:  size.Width,
@@ -298,7 +299,7 @@ func (p *proxyProcess) ResizePty(ctx context.Context, size runtime.ConsoleSize) 
 
 // CloseStdin closes the processes stdin
 func (p *proxyProcess) CloseIO(ctx context.Context) error {
-	_, err := p.task.CloseIO(ctx, &task.CloseIORequest{
+	_, err := p.rt.CloseIO(ctx, &rtapi.CloseIORequest{
 		ID:     p.tid,
 		ExecID: p.execid,
 	})
@@ -307,7 +308,7 @@ func (p *proxyProcess) CloseIO(ctx context.Context) error {
 
 // Start the container's user defined process
 func (p *proxyProcess) Start(ctx context.Context) error {
-	_, err := p.task.Start(ctx, &task.StartRequest{
+	_, err := p.rt.Start(ctx, &rtapi.StartRequest{
 		ID:     p.tid,
 		ExecID: p.execid,
 	})
@@ -316,7 +317,7 @@ func (p *proxyProcess) Start(ctx context.Context) error {
 
 // Wait for the process to exit
 func (p *proxyProcess) Wait(ctx context.Context) (*runtime.Exit, error) {
-	resp, err := p.task.Wait(ctx, &task.WaitRequest{
+	resp, err := p.rt.Wait(ctx, &rtapi.WaitRequest{
 		ID:     p.tid,
 		ExecID: p.tid,
 	})
@@ -332,7 +333,7 @@ func (p *proxyProcess) Wait(ctx context.Context) (*runtime.Exit, error) {
 
 // Delete deletes the process
 func (p *proxyProcess) Delete(ctx context.Context) (*runtime.Exit, error) {
-	resp, err := p.task.Delete(ctx, &task.DeleteRequest{
+	resp, err := p.rt.Delete(ctx, &rtapi.DeleteRequest{
 		ID:     p.tid,
 		ExecID: p.execid,
 	})
