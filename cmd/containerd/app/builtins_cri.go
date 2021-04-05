@@ -1,4 +1,4 @@
-// +build !no_btrfs
+// +build linux,!no_cri windows,!no_cri
 
 /*
    Copyright The containerd Authors.
@@ -16,6 +16,6 @@
    limitations under the License.
 */
 
-package main
+package app
 
-import _ "github.com/containerd/containerd/snapshots/btrfs"
+import _ "github.com/containerd/cri"

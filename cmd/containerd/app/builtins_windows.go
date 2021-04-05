@@ -1,4 +1,4 @@
-// +build darwin freebsd solaris
+// +build windows
 
 /*
    Copyright The containerd Authors.
@@ -16,8 +16,12 @@
    limitations under the License.
 */
 
-package main
+package app
 
 import (
-	_ "github.com/containerd/containerd/snapshots/native"
+	_ "github.com/containerd/containerd/diff/lcow"
+	_ "github.com/containerd/containerd/diff/windows"
+	_ "github.com/containerd/containerd/runtime/v2"
+	_ "github.com/containerd/containerd/snapshots/lcow"
+	_ "github.com/containerd/containerd/snapshots/windows"
 )

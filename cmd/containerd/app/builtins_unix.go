@@ -1,4 +1,4 @@
-// +build !no_aufs
+// +build darwin freebsd solaris
 
 /*
    Copyright The containerd Authors.
@@ -16,6 +16,8 @@
    limitations under the License.
 */
 
-package main
+package app
 
-import _ "github.com/containerd/aufs"
+import (
+	_ "github.com/containerd/containerd/snapshots/native"
+)

@@ -1,3 +1,5 @@
+// +build !no_zfs
+
 /*
    Copyright The containerd Authors.
 
@@ -14,12 +16,6 @@
    limitations under the License.
 */
 
-package main
+package app
 
-import (
-	"github.com/containerd/containerd/cmd/containerd/app"
-)
-
-func main() {
-	app.Run()
-}
+import _ "github.com/containerd/zfs"

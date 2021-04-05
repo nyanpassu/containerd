@@ -1,4 +1,4 @@
-// +build !no_zfs
+// +build !no_aufs
 
 /*
    Copyright The containerd Authors.
@@ -16,6 +16,6 @@
    limitations under the License.
 */
 
-package main
+package app
 
-import _ "github.com/containerd/zfs"
+import _ "github.com/containerd/aufs"
